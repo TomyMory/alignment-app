@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>リアルタイムアライメント測定</title>
   
-  <!-- AI骨格認識（MediaPipe）のプログラムを読み込む -->
+  <!-- AI骨格認識（MediaPipe）のプログラム -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
@@ -15,13 +15,10 @@
       margin: 0;
       padding: 0;
       background-color: #222;
-      overflow: hidden; /* スクロール防止 */
+      overflow: hidden;
+      font-family: sans-serif;
     }
-    /* 実際のカメラ映像は裏で動かすので隠す */
-    video {
-      display: none;
-    }
-    /* AIが線を描いた後の映像を表示するキャンバス */
+    video { display: none; } /* カメラ映像は裏で処理するため隠す */
     canvas {
       width: 100vw;
       height: 100vh;
@@ -29,78 +26,92 @@
     }
     #loading {
       position: absolute;
-      top: 50%;
-      left: 50%;
+      top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      color: white;
-      font-size: 20px;
-      font-family: sans-serif;
+      color: white; font-size: 18px; text-align: center;
+      z-index: 10;
     }
+    /* 追加：保存ボタンのデザイン */
+    #btn-save {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%); /* 画面の真ん中に配置 */
+      padding: 15px 30px;
+      font-size: 18px;
+      font-weight: bold;
+      background-color: #0078D4; /* Power Appsでおなじみの青色！ */
+      color: white;
+      border: none;
+      border-radius: 30px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+      cursor: pointer;
+      z-index: 20; /* 一番手前に表示 */
+      display: none; /* AIが認識するまでは隠しておく */
+    }
+    #btn-save:active { background-color: #005A9E; }
   </style>
 </head>
 <body>
-  <!-- 読み込み中のメッセージ -->
-  <div id="loading">AIモデルを読み込み中...<br>（カメラを許可してください）</div>
+  <div id="loading">AIモデルを準備中...<br>（数秒かかります）</div>
 
-  <!-- 裏で動くカメラと、表に表示するキャンバス -->
-  <video id="input_video" autoplay playsinline></video>
+  <!-- 【重要修正】 autoplay playsinline の後に「muted」を追加しました！ -->
+  <video id="input_video" autoplay playsinline muted></video>
   <canvas id="output_canvas"></canvas>
+
+  <!-- 追加：保存ボタン -->
+  <button id="btn-save">📸 今の姿勢を保存</button>
 
   <script>
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
     const loadingMessage = document.getElementById('loading');
+    const btnSave = document.getElementById('btn-save');
 
-    // AIが骨格を認識するたびに呼ばれる処理
     function onResults(results) {
-      // 読み込み中メッセージを消す
+      // 認識が始まったらローディングを消し、保存ボタンを表示
       loadingMessage.style.display = 'none';
+      btnSave.style.display = 'block';
 
-      // キャンバスのサイズを映像に合わせる
       canvasElement.width = videoElement.videoWidth;
       canvasElement.height = videoElement.videoHeight;
 
-      // 一旦キャンバスをクリアして、現在のカメラ映像を描く
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-      // もし人間（骨格）が認識されたら
       if (results.poseLandmarks) {
         const landmarks = results.poseLandmarks;
 
-        // 1. 体の各ポイント（マーカー）と、ポイント同士を結ぶ線を描く
-        drawConnectors(canvasCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4}); // 緑の線
-        drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2, radius: 4}); // 赤のマーカー
+        // 体のマーカーと線を描画
+        drawConnectors(canvasCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+        drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
 
-        // 2. 一番高い位置（Y座標が一番小さい）のマーカーを探す
+        // 一番高い位置のポイントを探す
         let highestPoint = landmarks[0];
         for(let i = 1; i < landmarks.length; i++) {
-          // 顔のパーツ（目や鼻など 0〜10番）を除外して、肩（11番）以下を基準にする場合はここを調整できます
-          // 今回はシンプルに画面上で一番上にあるポイントを取得します
           if(landmarks[i].y < highestPoint.y) {
             highestPoint = landmarks[i];
           }
         }
 
-        // 3. 一番高いポイントから、地面（画面下）への垂直線を引く
+        // 一番高い位置から垂直線を下ろす
         const hX = highestPoint.x * canvasElement.width;
         const hY = highestPoint.y * canvasElement.height;
 
         canvasCtx.beginPath();
         canvasCtx.moveTo(hX, hY);
         canvasCtx.lineTo(hX, canvasElement.height);
-        canvasCtx.strokeStyle = '#00BFFF'; // 水色の線
+        canvasCtx.strokeStyle = '#00BFFF';
         canvasCtx.lineWidth = 4;
-        canvasCtx.setLineDash([10, 10]); // 点線
+        canvasCtx.setLineDash([10, 10]);
         canvasCtx.stroke();
-        canvasCtx.setLineDash([]); // 点線をリセット
+        canvasCtx.setLineDash([]);
       }
       canvasCtx.restore();
     }
 
-    // MediaPipe Pose（骨格認識AI）の初期設定
     const pose = new Pose({locateFile: (file) => {
       return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
     }});
@@ -112,16 +123,23 @@
     });
     pose.onResults(onResults);
 
-    // カメラの初期設定（背面のカメラを使用）
     const camera = new Camera(videoElement, {
       onFrame: async () => {
         await pose.send({image: videoElement});
       },
       width: 640,
       height: 480,
-      facingMode: 'environment' // 'user'にするとインカメラになります
+      facingMode: 'environment'
     });
     camera.start();
+
+    // 追加：保存ボタンを押した時の処理
+    btnSave.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = 'AIアライメント測定_' + new Date().getTime() + '.png';
+      link.href = canvasElement.toDataURL('image/png');
+      link.click();
+    });
   </script>
 </body>
 </html>
