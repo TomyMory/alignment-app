@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-  <title>アライメント測定（タップ確定型トラッキング）</title>
+  <title>アライメント測定（高精度＆保存対応版）</title>
   
   <style>
     body {
@@ -18,13 +18,11 @@
     }
     #instruction { font-size: 16px; font-weight: bold; color: #FFD700; }
 
-    /* カメラ映像を裏で動かす */
     video { display: none; } 
     
-    /* キャンバスはピンチイン（拡大）できるように設定 */
     canvas {
       width: 100vw; height: 100vh; object-fit: contain;
-      background-color: #000; touch-action: pan-x pan-y; /* 拡大縮小を許可 */
+      background-color: #000; touch-action: pan-x pan-y;
     }
 
     #ui-footer {
@@ -37,7 +35,24 @@
       color: white; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
     #btn-reset { background-color: #666; }
-    #btn-save { background-color: #0078D4; }
+    #btn-save { background-color: #0078D4; } /* Microsoftブルー */
+
+    /* 追加：画像保存用のポップアップ（モーダル） */
+    #save-modal {
+      display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.9); z-index: 100;
+      flex-direction: column; align-items: center; justify-content: center;
+    }
+    #save-modal p {
+      color: white; font-weight: bold; margin-bottom: 15px; text-align: center; padding: 0 20px;
+    }
+    #saved-image {
+      max-width: 90%; max-height: 70%; border: 3px solid white; border-radius: 10px;
+    }
+    #btn-close-modal {
+      margin-top: 20px; padding: 10px 30px; font-size: 16px; font-weight: bold;
+      border-radius: 20px; background: #FF3B30; color: white; border: none; cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -50,8 +65,15 @@
   <canvas id="output_canvas"></canvas>
 
   <div id="ui-footer">
-    <button id="btn-reset" class="action-btn">🔄 マーカーリセット</button>
+    <button id="btn-reset" class="action-btn">🔄 リセット</button>
     <button id="btn-save" class="action-btn">📸 画像を保存</button>
+  </div>
+
+  <!-- 追加：画像保存用ポップアップ画面 -->
+  <div id="save-modal">
+    <p>👇 画像を「長押し」して、<br>「写真に追加」または「画像を保存」を選んでください</p>
+    <img id="saved-image" src="" alt="アライメント画像" />
+    <button id="btn-close-modal">✖ 閉じる</button>
   </div>
 
   <script>
@@ -60,10 +82,9 @@
     const ctx = canvas.getContext('2d');
     const instructionEl = document.getElementById('instruction');
 
-    let lockedMarkers = []; // 確定（ロック）したマーカーを入れる箱
-    let candidateBlobs = []; // 現在画面に映っている赤い色の候補
+    let lockedMarkers = [];
+    let candidateBlobs = [];
 
-    // 1. カメラ起動
     navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
     }).then(stream => {
@@ -78,9 +99,7 @@
       alert("カメラの起動に失敗しました。");
     });
 
-    // 2. 画面タップ（クリック）でマーカーを確定する処理
     canvas.addEventListener('click', (e) => {
-      // 画面の拡大率を計算して、タップした正確な座標を割り出す
       const rect = canvas.getBoundingClientRect();
       const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
       const displayWidth = canvas.width * scale;
@@ -91,9 +110,8 @@
       const clickX = (e.clientX - rect.left - offsetX) / scale;
       const clickY = (e.clientY - rect.top - offsetY) / scale;
 
-      // タップした場所の近く（半径約50ピクセル以内）に「候補の赤い点」があるか探す
       let closestBlob = null;
-      let minDist = 2500; // 50の2乗
+      let minDist = 10000; // 約100ピクセル以内をタップで反応
       
       candidateBlobs.forEach(blob => {
         const dist = (blob.x - clickX) ** 2 + (blob.y - clickY) ** 2;
@@ -103,25 +121,18 @@
         }
       });
 
-      // 近くに候補があれば、確定マーカーとして登録
       if (closestBlob) {
         lockedMarkers.push({ x: closestBlob.x, y: closestBlob.y });
-        
-        // 上から順に並び替え
         lockedMarkers.sort((a, b) => a.y - b.y);
       }
     });
 
-    // 3. メインのトラッキング処理（パラパラ漫画）
     function trackRedStickers() {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imgData.data;
-
       let blobs = [];
 
-      // 【改善1】stepを2にして、より細かくスキャンする（遠くの小さなシールも発見）
       const step = 2; 
       for (let y = 0; y < canvas.height; y += step) {
         for (let x = 0; x < canvas.width; x += step) {
@@ -148,13 +159,13 @@
         }
       }
 
-      // 【改善2】count>3 で、わずかな赤い点でも候補として残す
       candidateBlobs = blobs.filter(b => b.count > 3);
 
-      // --- 【確定マーカーの追従処理】 ---
+      // 【修正】トラッキングが外れにくくする処理
       lockedMarkers.forEach(marker => {
         let closest = null;
-        let minDist = 10000; // 前回の位置から半径100ピクセル以内を探す
+        let minDist = 40000; // 探索範囲を大幅に拡大（半径200ピクセルまで探す）
+        
         candidateBlobs.forEach(blob => {
           const dist = (marker.x - blob.x) ** 2 + (marker.y - blob.y) ** 2;
           if (dist < minDist) {
@@ -162,28 +173,23 @@
             closest = blob;
           }
         });
-        // 近くに赤い候補がいれば、マーカーの位置を最新に更新する
+        
+        // 近くに見つかれば位置を更新（見つからなかった場合は直前の位置をキープして消さない）
         if (closest) {
           marker.x = closest.x;
           marker.y = closest.y;
         }
       });
 
-      // --- 描画処理 ---
-
-      // A: 候補の表示（うすい赤色の円）
       candidateBlobs.forEach(blob => {
         ctx.beginPath();
         ctx.arc(blob.x, blob.y, 10, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 100, 100, 0.8)'; // 半透明の赤
+        ctx.strokeStyle = 'rgba(255, 100, 100, 0.8)';
         ctx.lineWidth = 2;
         ctx.stroke();
       });
 
-      // B: 確定マーカーと線の表示
       if (lockedMarkers.length > 0) {
-        
-        // 確定マーカー同士を結ぶ線
         ctx.beginPath();
         ctx.moveTo(lockedMarkers[0].x, lockedMarkers[0].y);
         for (let i = 1; i < lockedMarkers.length; i++) {
@@ -193,7 +199,6 @@
         ctx.lineWidth = 4;
         ctx.stroke();
 
-        // 垂直線
         ctx.beginPath();
         ctx.moveTo(lockedMarkers[0].x, lockedMarkers[0].y);
         ctx.lineTo(lockedMarkers[0].x, canvas.height);
@@ -203,7 +208,6 @@
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // 確定マーカー（黄色）の描画
         lockedMarkers.forEach((marker, index) => {
           ctx.beginPath();
           ctx.arc(marker.x, marker.y, 12, 0, Math.PI * 2);
@@ -226,16 +230,20 @@
       requestAnimationFrame(trackRedStickers);
     }
 
-    // ボタン処理
     document.getElementById('btn-reset').addEventListener('click', () => {
       lockedMarkers = [];
     });
 
+    // 【修正】画像保存ポップアップの表示処理
     document.getElementById('btn-save').addEventListener('click', () => {
-      const link = document.createElement('a');
-      link.download = `アライメント測定_${new Date().getTime()}.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
+      const dataURL = canvas.toDataURL('image/png'); // 今の画面を画像データに変換
+      document.getElementById('saved-image').src = dataURL; // モーダル内の<img>タグにセット
+      document.getElementById('save-modal').style.display = 'flex'; // モーダルを表示
+    });
+
+    // ポップアップを閉じる処理
+    document.getElementById('btn-close-modal').addEventListener('click', () => {
+      document.getElementById('save-modal').style.display = 'none';
     });
   </script>
 </body>
