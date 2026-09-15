@@ -3,12 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-  <title>アライメント測定（自動アセスメント＆プロ仕様版）</title>
+  <title>アライメント測定（重力自動補正版）</title>
   
   <style>
-    /* 全体のデザイン設定 */
-    body { margin: 0; padding: 0; background-color: #111; color: white; font-family: sans-serif; }
+    body { margin: 0; padding: 0; background-color: #111; color: white; font-family: sans-serif; overflow: hidden; }
     
+    /* アプリ起動時のスタート画面（センサー許可のため必須） */
+    #start-screen {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: #111; z-index: 200; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+    }
+    #btn-start-app {
+      padding: 15px 40px; font-size: 20px; font-weight: bold; border-radius: 30px;
+      background-color: #107C41; color: white; border: none; cursor: pointer;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+    }
+
     #ui-header {
       position: fixed; top: 0; width: 100%; background-color: rgba(51, 51, 51, 0.8);
       padding: 10px; text-align: center; z-index: 20;
@@ -38,15 +49,13 @@
     #btn-reset { background-color: #666; }
     #btn-save { background-color: #107C41; } 
 
-    /* 各種ポップアップ（モーダル）のデザイン */
+    /* 各種ポップアップ */
     .modal-overlay {
       display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       background: rgba(0, 0, 0, 0.85); z-index: 100;
       flex-direction: column; align-items: center; justify-content: center;
     }
     .modal-overlay p { color: white; font-weight: bold; margin-bottom: 20px; text-align: center; font-size: 18px; }
-    
-    /* 向き選択ボタン */
     .direction-btn {
       padding: 15px 30px; margin: 10px; font-size: 18px; font-weight: bold;
       border-radius: 10px; border: none; cursor: pointer; background: #0078D4; color: white;
@@ -55,7 +64,7 @@
     #saved-image { max-width: 90%; max-height: 70%; border: 3px solid white; border-radius: 10px; }
     #btn-close-save { margin-top: 20px; padding: 10px 30px; font-size: 16px; font-weight: bold; border-radius: 20px; background: #FF3B30; color: white; border: none; }
 
-    /* アセスメント結果の表示ボックス */
+    /* アセスメント表示ボックス */
     #assessment-box {
       display: none; position: fixed; top: 100px; left: 50%; transform: translateX(-50%);
       background-color: rgba(255, 255, 255, 0.95); color: #333;
@@ -67,12 +76,18 @@
 </head>
 <body>
 
+  <!-- センサー許可のためのスタート画面 -->
+  <div id="start-screen">
+    <p style="color: white; font-weight: bold; margin-bottom: 20px;">重力センサーとカメラを使用します</p>
+    <button id="btn-start-app">🚀 アプリを開始する</button>
+  </div>
+
   <div id="ui-header">
     <div>
       <button id="btn-sagittal" class="mode-btn active">矢状面</button>
       <button id="btn-frontal" class="mode-btn">前額面</button>
     </div>
-    <div id="instruction">カメラ起動中...</div>
+    <div id="instruction">準備中...</div>
   </div>
 
   <div id="assessment-box"></div>
@@ -86,7 +101,6 @@
     <button id="btn-save" class="action-btn">📸 画像保存</button>
   </div>
 
-  <!-- 【追加】向き選択のポップアップ -->
   <div id="direction-modal" class="modal-overlay">
     <p>被験者はどちらを向いていますか？</p>
     <div>
@@ -95,7 +109,6 @@
     </div>
   </div>
 
-  <!-- 保存用ポップアップ -->
   <div id="save-modal" class="modal-overlay">
     <p>👇 画像を「長押し」して保存してください</p>
     <img id="saved-image" src="" alt="アライメント画像" />
@@ -109,57 +122,93 @@
     const instructionEl = document.getElementById('instruction');
     const assessmentBox = document.getElementById('assessment-box');
     const directionModal = document.getElementById('direction-modal');
+    const startScreen = document.getElementById('start-screen');
 
-    // 臨床データ設定
     const markerLabels = {
       sagittal: ["①乳様突起", "②肩峰", "③大転子", "④膝蓋骨後面", "⑤外果の前方"],
       frontal: ["①喉頭隆起", "②椎骨棘突起", "③殿裂", "④両膝関節内側", "⑤両内果間"]
     };
 
     let currentMode = "sagittal"; 
-    let sagittalFacing = null; // "left" または "right"
+    let sagittalFacing = null; 
     let lockedMarkers = []; 
     let candidateBlobs = []; 
     let targetColor = null; 
+    let deviceGamma = 0; // スマホの左右の傾き（角度）を保存する箱
 
-    // --- モード切替と初期化 ---
+    // ==========================================
+    // 1. アプリ起動とセンサーの許可処理
+    // ==========================================
+    document.getElementById('btn-start-app').addEventListener('click', () => {
+      // iPhone (iOS 13+) のセンサー許可をリクエスト
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+          .then(permissionState => {
+            if (permissionState === 'granted') {
+              startAppCore();
+            } else {
+              alert("センサーの許可が必要です。リロードして再度許可してください。");
+            }
+          })
+          .catch(console.error);
+      } else {
+        // Androidなど許可不要の端末
+        startAppCore();
+      }
+    });
+
+    function startAppCore() {
+      startScreen.style.display = "none";
+
+      // 傾きセンサーの監視を開始
+      window.addEventListener('deviceorientation', (e) => {
+        deviceGamma = e.gamma || 0; // 左右の傾きを取得
+      });
+
+      // カメラ起動
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      }).then(stream => {
+        video.srcObject = stream; video.play();
+        video.onloadeddata = () => {
+          canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+          resetAll();
+          requestAnimationFrame(trackStickers); 
+        };
+      }).catch(err => { alert("カメラの起動に失敗しました。"); });
+    }
+
+    // ==========================================
+    // 2. モード切替・指示文・リセット等の制御
+    // ==========================================
     document.getElementById('btn-sagittal').addEventListener('click', (e) => {
       currentMode = "sagittal"; 
       e.target.classList.add('active'); document.getElementById('btn-frontal').classList.remove('active');
-      resetAll(); // リセット時に向きもリセットされ、ポップアップが出ます
+      resetAll(); 
     });
-    
     document.getElementById('btn-frontal').addEventListener('click', (e) => {
       currentMode = "frontal"; 
       e.target.classList.add('active'); document.getElementById('btn-sagittal').classList.remove('active');
       resetAll();
     });
 
-    // 向き選択ボタンの処理
     document.getElementById('btn-face-left').addEventListener('click', () => {
-      sagittalFacing = "left";
-      directionModal.style.display = "none";
-      updateInstruction();
+      sagittalFacing = "left"; directionModal.style.display = "none"; updateInstruction();
     });
     document.getElementById('btn-face-right').addEventListener('click', () => {
-      sagittalFacing = "right";
-      directionModal.style.display = "none";
-      updateInstruction();
+      sagittalFacing = "right"; directionModal.style.display = "none"; updateInstruction();
     });
 
-    // 指示文の更新
     function updateInstruction() {
-      // 矢状面で向きが未決定の場合は、ここで処理を止める
       if (currentMode === "sagittal" && !sagittalFacing) {
-        instructionEl.innerText = "向きを選択してください";
-        return;
+        instructionEl.innerText = "向きを選択してください"; return;
       }
-
       const labels = markerLabels[currentMode];
       if (lockedMarkers.length === 0) {
         instructionEl.innerText = `「${labels[0]}」部分に設置したマーカーを選択してください`;
         instructionEl.style.color = "white";
       } else if (lockedMarkers.length < 5) {
+        instructionEl.innerText = `候補をタップ：次は「${labels[labels.length]}」です`; // 修正: 次のラベル
         instructionEl.innerText = `候補をタップ：次は「${labels[lockedMarkers.length]}」です`;
         instructionEl.style.color = "#FFD700";
       } else {
@@ -168,21 +217,10 @@
       }
     }
 
-    // カメラ起動
-    navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-    }).then(stream => {
-      video.srcObject = stream; video.play();
-      video.onloadeddata = () => {
-        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-        resetAll(); // アプリ起動時に初期化処理を呼ぶ
-        requestAnimationFrame(trackStickers); 
-      };
-    }).catch(err => { alert("カメラの起動に失敗しました。"); });
-
-    // --- キャンバスのタップ処理 ---
+    // ==========================================
+    // 3. スポイトとキャンバスタップ
+    // ==========================================
     canvas.addEventListener('click', (e) => {
-      // 矢状面で向きが未選択の時、または5個打ち終わった時はタップを無視
       if ((currentMode === "sagittal" && !sagittalFacing) || lockedMarkers.length >= 5) return; 
 
       const rect = canvas.getBoundingClientRect();
@@ -193,17 +231,14 @@
       const clickX = Math.round((e.clientX - rect.left - offsetX) / scale);
       const clickY = Math.round((e.clientY - rect.top - offsetY) / scale);
 
-      // スポイト機能
       if (lockedMarkers.length === 0) {
         const pixel = ctx.getImageData(clickX, clickY, 1, 1).data;
         targetColor = { r: pixel[0], g: pixel[1], b: pixel[2] }; 
         lockedMarkers.push({ x: clickX, y: clickY });
-        updateInstruction();
-        return;
+        updateInstruction(); return;
       }
 
-      let closestBlob = null;
-      let minDist = 10000; 
+      let closestBlob = null; let minDist = 10000; 
       candidateBlobs.forEach(blob => {
         const dist = (blob.x - clickX) ** 2 + (blob.y - clickY) ** 2;
         if (dist < minDist) { minDist = dist; closestBlob = blob; }
@@ -216,16 +251,16 @@
       }
     });
 
-    // --- トラッキング処理 ---
+    // ==========================================
+    // 4. 重力計算付きトラッキングと描画
+    // ==========================================
     function trackStickers() {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      // 色の探索
       if (targetColor) {
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imgData.data;
         let blobs = [];
-
         for (let y = 0; y < canvas.height; y += 2) {
           for (let x = 0; x < canvas.width; x += 2) {
             const i = (y * canvas.width + x) * 4;
@@ -246,14 +281,10 @@
           }
         }
         candidateBlobs = blobs.filter(b => b.count > 3);
-      } else {
-        candidateBlobs = []; 
-      }
+      } else { candidateBlobs = []; }
 
-      // マーカーの追従
       lockedMarkers.forEach(marker => {
-        let closest = null;
-        let minDist = 90000; 
+        let closest = null; let minDist = 90000; 
         candidateBlobs.forEach(blob => {
           const dist = (marker.x - blob.x) ** 2 + (marker.y - blob.y) ** 2;
           if (dist < minDist) { minDist = dist; closest = blob; }
@@ -261,7 +292,6 @@
         if (closest) { marker.x = closest.x; marker.y = closest.y; }
       });
 
-      // --- 描画処理 ---
       if (lockedMarkers.length < 5) {
         candidateBlobs.forEach(blob => {
           ctx.beginPath(); ctx.arc(blob.x, blob.y, 10, 0, Math.PI * 2);
@@ -271,7 +301,6 @@
       }
 
       if (lockedMarkers.length > 0) {
-        // マーカー間を繋ぐ線
         ctx.beginPath();
         ctx.moveTo(lockedMarkers[0].x, lockedMarkers[0].y);
         for (let i = 1; i < lockedMarkers.length; i++) {
@@ -279,19 +308,29 @@
         }
         ctx.strokeStyle = '#00FF00'; ctx.lineWidth = 4; ctx.stroke();
 
-        // 垂直線（重心線）
+        // 【新機能】傾き（ラジアン角）の計算
+        // 角度（度数法）を数学用のラジアンに変換
+        const radian = deviceGamma * (Math.PI / 180);
+
         const baseMarker = lockedMarkers[lockedMarkers.length - 1]; 
+        
+        // 【新機能】真の重力方向（斜め）への直線を引く（三角関数 cos, sin を使用）
+        const lineLength = 2000; // 画面をはみ出す長さに設定
+        const topX = baseMarker.x - lineLength * Math.sin(radian);
+        const topY = baseMarker.y - lineLength * Math.cos(radian);
+        const bottomX = baseMarker.x + lineLength * Math.sin(radian);
+        const bottomY = baseMarker.y + lineLength * Math.cos(radian);
+
         ctx.beginPath();
-        ctx.moveTo(baseMarker.x, 0); ctx.lineTo(baseMarker.x, canvas.height);
+        ctx.moveTo(topX, topY); 
+        ctx.lineTo(bottomX, bottomY);
         ctx.strokeStyle = '#FF0000'; ctx.setLineDash([10, 10]); ctx.lineWidth = 3; ctx.stroke();
         ctx.setLineDash([]);
 
-        // マーカーの丸とテキスト
         const currentLabels = markerLabels[currentMode];
         lockedMarkers.forEach((marker, index) => {
           ctx.beginPath(); ctx.arc(marker.x, marker.y, 10, 0, Math.PI * 2);
           ctx.fillStyle = '#FFD700'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'black'; ctx.stroke();
-
           ctx.fillStyle = 'white'; ctx.font = 'bold 18px sans-serif';
           ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
           ctx.fillText(currentLabels[index], marker.x + 15, marker.y + 6);
@@ -299,23 +338,31 @@
         });
 
         // ==========================================
-        // 【最優先】自動アセスメントロジック
+        // 【最優先】真の重力を考慮した自動アセスメント
         // ==========================================
         if (lockedMarkers.length === 5) {
-          let issues = []; // ズレのリストを入れる箱
-          const threshold = canvas.width * 0.03; // しきい値
-          const baseX = baseMarker.x;
+          let issues = []; 
+          const threshold = canvas.width * 0.03; 
+
+          // 各マーカーが「重力線」からどれくらい水平に離れているか（座標回転の数学）
+          const getTrueOffset = (marker) => {
+            const dx = marker.x - baseMarker.x;
+            const dy = marker.y - baseMarker.y;
+            // 傾きを逆回転させて、真の水平距離（X軸のズレ）を導き出す
+            return dx * Math.cos(radian) - dy * Math.sin(radian);
+          };
 
           if (currentMode === "sagittal") {
-            // 前方へのズレ量（プラスなら前方、マイナスなら後方）を計算
-            const getForwardOffset = (x) => {
-              return sagittalFacing === "left" ? (baseX - x) : (x - baseX);
+            // 左向きなら、trueXがマイナス（左側）の時が前方
+            const getForwardOffset = (marker) => {
+              const trueX = getTrueOffset(marker);
+              return sagittalFacing === "left" ? -trueX : trueX;
             };
 
-            const mastoidOffset = getForwardOffset(lockedMarkers[0].x);   // ①乳様突起
-            const acromionOffset = getForwardOffset(lockedMarkers[1].x);  // ②肩峰
-            const trochanterOffset = getForwardOffset(lockedMarkers[2].x); // ③大転子
-            const patellaOffset = getForwardOffset(lockedMarkers[3].x);    // ④膝蓋骨後面
+            const mastoidOffset = getForwardOffset(lockedMarkers[0]);   
+            const acromionOffset = getForwardOffset(lockedMarkers[1]);  
+            const trochanterOffset = getForwardOffset(lockedMarkers[2]); 
+            const patellaOffset = getForwardOffset(lockedMarkers[3]);    
 
             if (mastoidOffset > threshold) issues.push({ msg: "⚠️ 頭頚部が前方に偏位しています<br><span style='font-size:14px; color:#666;'>(ストレートネック等、首への負担大)</span>", diff: Math.abs(mastoidOffset) });
             if (acromionOffset > threshold) issues.push({ msg: "⚠️ 肩が前方に巻いています<br><span style='font-size:14px; color:#666;'>(猫背・巻き肩の疑い)</span>", diff: Math.abs(acromionOffset) });
@@ -324,10 +371,9 @@
             if (patellaOffset < -threshold) issues.push({ msg: "⚠️ 膝が過伸展しています<br><span style='font-size:14px; color:#666;'>(反張膝・膝関節への負担大)</span>", diff: Math.abs(patellaOffset) });
           } 
           else if (currentMode === "frontal") {
-            // 前額面のアセスメント
-            const throatOffset = Math.abs(lockedMarkers[0].x - baseX); // ①喉頭隆起
-            const spineOffset = Math.abs(lockedMarkers[1].x - baseX);  // ②椎骨棘突起
-            const pelvisOffset = Math.abs(lockedMarkers[2].x - baseX); // ③殿裂
+            const throatOffset = Math.abs(getTrueOffset(lockedMarkers[0])); 
+            const spineOffset = Math.abs(getTrueOffset(lockedMarkers[1]));  
+            const pelvisOffset = Math.abs(getTrueOffset(lockedMarkers[2])); 
 
             if (throatOffset > threshold || spineOffset > threshold) {
               issues.push({ msg: "⚠️ 頭部・体幹が左右に傾いています<br><span style='font-size:14px; color:#666;'>(側弯や左右の筋力アンバランスの疑い)</span>", diff: Math.max(throatOffset, spineOffset) });
@@ -337,11 +383,9 @@
             }
           }
 
-          // ズレが大きい順に並び替え（ソート）
           issues.sort((a, b) => b.diff - a.diff);
 
           if (issues.length > 0) {
-            // 最もズレが大きい第1位だけを表示する
             assessmentBox.innerHTML = issues[0].msg;
             assessmentBox.style.display = "block";
           } else {
@@ -349,11 +393,10 @@
           }
         }
       }
-
       requestAnimationFrame(trackStickers);
     }
 
-    // --- 各種ボタン処理 ---
+    // --- ボタン処理 ---
     document.getElementById('btn-undo').addEventListener('click', () => {
       if (lockedMarkers.length > 0) {
         lockedMarkers.pop(); 
@@ -365,8 +408,6 @@
     function resetAll() {
       lockedMarkers = []; targetColor = null; sagittalFacing = null;
       assessmentBox.style.display = "none";
-      
-      // 矢状面なら向き選択ポップアップを表示
       if (currentMode === "sagittal") {
         directionModal.style.display = "flex";
       } else {
