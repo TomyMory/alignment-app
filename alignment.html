@@ -58,7 +58,7 @@
 <body>
 
   <div id="ui-header">
-    <div id="instruction">赤い候補をタップして確定してください</div>
+    <div id="instruction">黄色い候補をタップして確定してください</div>
   </div>
 
   <video id="input_video" autoplay playsinline muted></video>
@@ -166,13 +166,15 @@
         let closest = null;
         let minDist = 40000; // 探索範囲を大幅に拡大（半径200ピクセルまで探す）
         
-        candidateBlobs.forEach(blob => {
-          const dist = (marker.x - blob.x) ** 2 + (marker.y - blob.y) ** 2;
-          if (dist < minDist) {
-            minDist = dist;
-            closest = blob;
-          }
-        });
+       candidateBlobs.forEach(blob => {
+        ctx.beginPath();
+        ctx.arc(blob.x, blob.y, 10, 0, Math.PI * 2);
+        // 【変更前】 ctx.strokeStyle = 'rgba(255, 100, 100, 0.8)'; // 半透明の赤
+        // 【変更後】
+        ctx.strokeStyle = 'rgba(255, 255, 100, 0.8)'; // 半透明の黄色
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
         
         // 近くに見つかれば位置を更新（見つからなかった場合は直前の位置をキープして消さない）
         if (closest) {
