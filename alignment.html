@@ -141,7 +141,7 @@
           const g = data[i + 1]; 
           const b = data[i + 2]; 
 
-          if (r > 150 && g < 80 && b < 80) {
+　　　if (r > 150 && g > 150 && b < 100) {
             let foundBlob = false;
             for (let blob of blobs) {
               if (Math.abs(blob.x - x) < 30 && Math.abs(blob.y - y) < 30) {
