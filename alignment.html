@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-  <title>アライメント測定（スポイト学習＆プロ仕様版）</title>
+  <title>アライメント測定（スポイト学習＆フル追従版）</title>
   
   <style>
     body {
@@ -11,7 +11,6 @@
       font-family: sans-serif;
     }
     
-    /* 上部UI（モード切替と案内） */
     #ui-header {
       position: fixed; top: 0; width: 100%;
       background-color: rgba(51, 51, 51, 0.8);
@@ -21,8 +20,8 @@
       padding: 8px 15px; margin: 0 5px 10px 5px; font-weight: bold; border: none; border-radius: 5px;
       background-color: #555; color: white; cursor: pointer;
     }
-    .mode-btn.active { background-color: #0078D4; } /* Microsoftブルー */
-    #instruction { font-size: 16px; font-weight: bold; color: #FFD700; }
+    .mode-btn.active { background-color: #0078D4; } 
+    #instruction { font-size: 16px; font-weight: bold; color: white; }
 
     video { display: none; } 
     canvas {
@@ -30,7 +29,6 @@
       background-color: #000; touch-action: pan-x pan-y;
     }
 
-    /* 下部UI（操作ボタン群） */
     #ui-footer {
       position: fixed; bottom: 0; width: 100%;
       background-color: rgba(51, 51, 51, 0.8);
@@ -40,11 +38,10 @@
       padding: 10px 15px; font-size: 14px; font-weight: bold; border: none; border-radius: 20px;
       color: white; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    #btn-undo { background-color: #FF9500; } /* オレンジ色 */
+    #btn-undo { background-color: #FF9500; } 
     #btn-reset { background-color: #666; }
-    #btn-save { background-color: #107C41; } /* 緑色 */
+    #btn-save { background-color: #107C41; } 
 
-    /* 保存ポップアップ */
     #save-modal {
       display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       background: rgba(0, 0, 0, 0.9); z-index: 100;
@@ -89,18 +86,16 @@
     const ctx = canvas.getContext('2d');
     const instructionEl = document.getElementById('instruction');
 
-    // --- 1. 臨床データ設定 ---
     const markerLabels = {
       sagittal: ["①乳様突起", "②肩峰", "③大転子", "④膝蓋骨後面", "⑤外果の前方"],
       frontal: ["①喉頭隆起", "②椎骨棘突起", "③殿裂", "④両膝関節内側の中心", "⑤両内果間の中心"]
     };
 
-    let currentMode = "sagittal"; // 初期モード
+    let currentMode = "sagittal"; 
     let lockedMarkers = []; 
     let candidateBlobs = []; 
-    let targetColor = null; // 【新機能】学習したシールの色（RGB）を入れる箱
+    let targetColor = null; 
 
-    // モード切替ボタンの処理
     document.getElementById('btn-sagittal').addEventListener('click', (e) => {
       currentMode = "sagittal"; resetAll();
       e.target.classList.add('active'); document.getElementById('btn-frontal').classList.remove('active');
@@ -110,22 +105,22 @@
       e.target.classList.add('active'); document.getElementById('btn-sagittal').classList.remove('active');
     });
 
-    // 案内文を更新する処理
+    // 【修正1】案内文の指示を的確に変更しました
     function updateInstruction() {
       const labels = markerLabels[currentMode];
       if (lockedMarkers.length === 0) {
-        instructionEl.innerText = `画面に映る「${labels[0]}」のシールを直接タップして色を記憶させてください`;
+        instructionEl.innerText = `「${labels[0]}」部分に設置したマーカーを選択してください`;
         instructionEl.style.color = "white";
       } else if (lockedMarkers.length < 5) {
-        instructionEl.innerText = `黄色い候補をタップ：次は「${labels[lockedMarkers.length]}」です`;
+        instructionEl.innerText = `候補をタップ：次は「${labels[lockedMarkers.length]}」です`;
         instructionEl.style.color = "#FFD700";
       } else {
-        instructionEl.innerText = `全マーカー（5つ）の設置が完了しました！`;
+        // 5つ打ち終わった後もトラッキングが続くことを明記
+        instructionEl.innerText = `設置完了！（リアルタイム追従中）`;
         instructionEl.style.color = "#00FF00";
       }
     }
 
-    // カメラ起動
     navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
     }).then(stream => {
@@ -138,9 +133,8 @@
       };
     }).catch(err => { alert("カメラの起動に失敗しました。"); });
 
-    // --- 2. 画面タップでのスポイト＆確定処理 ---
     canvas.addEventListener('click', (e) => {
-      if (lockedMarkers.length >= 5) return; // 5つ打ち終わっていたら何もしない
+      if (lockedMarkers.length >= 5) return; 
 
       const rect = canvas.getBoundingClientRect();
       const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
@@ -152,16 +146,14 @@
       const clickX = Math.round((e.clientX - rect.left - offsetX) / scale);
       const clickY = Math.round((e.clientY - rect.top - offsetY) / scale);
 
-      // 【スポイト機能】まだ1つもマーカーが無い場合、タップした場所の色を記憶する
       if (lockedMarkers.length === 0) {
         const pixel = ctx.getImageData(clickX, clickY, 1, 1).data;
-        targetColor = { r: pixel[0], g: pixel[1], b: pixel[2] }; // RGBを記憶！
+        targetColor = { r: pixel[0], g: pixel[1], b: pixel[2] }; 
         lockedMarkers.push({ x: clickX, y: clickY });
         updateInstruction();
         return;
       }
 
-      // 2つ目以降は、候補の中から近いものを探してロックする
       let closestBlob = null;
       let minDist = 10000; 
       candidateBlobs.forEach(blob => {
@@ -171,17 +163,16 @@
 
       if (closestBlob) {
         lockedMarkers.push({ x: closestBlob.x, y: closestBlob.y });
-        lockedMarkers.sort((a, b) => a.y - b.y); // Y座標（上）から順に並び替え
+        lockedMarkers.sort((a, b) => a.y - b.y); 
         updateInstruction();
       }
     });
 
-    // --- 3. トラッキングと描画のメイン処理 ---
     function trackStickers() {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      // 学習した色がある場合のみ、候補を探す（処理を軽くする工夫）
-      if (targetColor && lockedMarkers.length < 5) {
+      // 【修正2】マーカーが5個になった後も、候補を探し続けるようにリミッターを解除しました
+      if (targetColor) {
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imgData.data;
         let blobs = [];
@@ -192,7 +183,6 @@
             const i = (y * canvas.width + x) * 4;
             const r = data[i], g = data[i + 1], b = data[i + 2]; 
 
-            // 学習した色（targetColor）と「似ているか」を計算（許容誤差50）
             if (Math.abs(r - targetColor.r) < 50 && 
                 Math.abs(g - targetColor.g) < 50 && 
                 Math.abs(b - targetColor.b) < 50) {
@@ -212,10 +202,10 @@
         }
         candidateBlobs = blobs.filter(b => b.count > 3);
       } else {
-        candidateBlobs = []; // 色を学習していない、または5個終わった時は候補を探さない
+        candidateBlobs = []; 
       }
 
-      // トラッキング（ロックしたマーカーを動かす）
+      // トラッキング処理（マーカーが5個でも動き続けます）
       lockedMarkers.forEach(marker => {
         let closest = null;
         let minDist = 90000; 
@@ -228,11 +218,13 @@
 
       // --- 描画処理 ---
       
-      // 候補の表示（半透明の黄色）
-      candidateBlobs.forEach(blob => {
-        ctx.beginPath(); ctx.arc(blob.x, blob.y, 10, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 255, 100, 0.8)'; ctx.lineWidth = 2; ctx.stroke();
-      });
+      // 5つ打ち終わるまでは、次の候補（半透明の黄色）を表示する
+      if (lockedMarkers.length < 5) {
+        candidateBlobs.forEach(blob => {
+          ctx.beginPath(); ctx.arc(blob.x, blob.y, 10, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(255, 255, 100, 0.8)'; ctx.lineWidth = 2; ctx.stroke();
+        });
+      }
 
       if (lockedMarkers.length > 0) {
         // マーカー同士を結ぶ線（緑色）
@@ -243,11 +235,11 @@
         }
         ctx.strokeStyle = '#00FF00'; ctx.lineWidth = 4; ctx.stroke();
 
-        // 【修正】1番上のマーカーから床への垂直線（赤色・点線）
+        // 垂直線（赤色・点線）
         ctx.beginPath();
         ctx.moveTo(lockedMarkers[0].x, lockedMarkers[0].y);
         ctx.lineTo(lockedMarkers[0].x, canvas.height);
-        ctx.strokeStyle = '#FF0000'; // 赤色
+        ctx.strokeStyle = '#FF0000'; 
         ctx.setLineDash([10, 10]); ctx.lineWidth = 3; ctx.stroke();
         ctx.setLineDash([]);
 
@@ -259,7 +251,6 @@
           ctx.fillStyle = '#FFD700'; ctx.fill();
           ctx.lineWidth = 2; ctx.strokeStyle = 'black'; ctx.stroke();
 
-          // テキスト（名称）の描画
           ctx.fillStyle = 'white';
           ctx.font = 'bold 18px sans-serif';
           ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
@@ -271,20 +262,17 @@
       requestAnimationFrame(trackStickers);
     }
 
-    // --- 4. ボタン操作処理 ---
-    
-    // 【新機能】1つ戻る（Undo）処理
+    // --- ボタン操作処理 ---
     document.getElementById('btn-undo').addEventListener('click', () => {
       if (lockedMarkers.length > 0) {
-        lockedMarkers.pop(); // 配列の最後の要素を1つ削除
+        lockedMarkers.pop(); 
         if (lockedMarkers.length === 0) {
-          targetColor = null; // 全部消えたら、学習した色もリセット
+          targetColor = null; 
         }
         updateInstruction();
       }
     });
 
-    // 全てリセット処理
     function resetAll() {
       lockedMarkers = [];
       targetColor = null;
@@ -292,7 +280,6 @@
     }
     document.getElementById('btn-reset').addEventListener('click', resetAll);
 
-    // 画像保存処理
     document.getElementById('btn-save').addEventListener('click', () => {
       const dataURL = canvas.toDataURL('image/png');
       document.getElementById('saved-image').src = dataURL;
