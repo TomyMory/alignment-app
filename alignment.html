@@ -2,9 +2,8 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <!-- ピンチイン（拡大）ができるように viewport の設定を変更しました -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>赤色シール自動追跡アプリ</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+  <title>アライメント測定（タップ確定型トラッキング）</title>
   
   <style>
     body {
@@ -12,48 +11,47 @@
       font-family: sans-serif;
     }
     
-    /* 上部のUIエリア */
     #ui-header {
       position: fixed; top: 0; width: 100%;
       background-color: rgba(51, 51, 51, 0.8);
       padding: 15px; text-align: center; z-index: 20;
     }
-    
     #instruction { font-size: 16px; font-weight: bold; color: #FFD700; }
 
-    /* 映像エリア */
-    video { display: none; } /* 裏側でカメラを動かすための隠し要素 */
+    /* カメラ映像を裏で動かす */
+    video { display: none; } 
+    
+    /* キャンバスはピンチイン（拡大）できるように設定 */
     canvas {
       width: 100vw; height: 100vh; object-fit: contain;
-      background-color: #000;
+      background-color: #000; touch-action: pan-x pan-y; /* 拡大縮小を許可 */
     }
 
-    /* 下部のボタンエリア */
     #ui-footer {
       position: fixed; bottom: 0; width: 100%;
       background-color: rgba(51, 51, 51, 0.8);
-      padding: 15px; display: flex; justify-content: center; z-index: 20;
+      padding: 15px; display: flex; justify-content: space-evenly; z-index: 20;
     }
-    #btn-save {
-      padding: 12px 30px; font-size: 18px; font-weight: bold; border: none; border-radius: 25px;
-      background-color: #0078D4; color: white; cursor: pointer;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    .action-btn {
+      padding: 12px 20px; font-size: 16px; font-weight: bold; border: none; border-radius: 25px;
+      color: white; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    #btn-save:active { background-color: #005A9E; }
+    #btn-reset { background-color: #666; }
+    #btn-save { background-color: #0078D4; }
   </style>
 </head>
 <body>
 
   <div id="ui-header">
-    <div id="instruction">赤いシールをカメラに映してください</div>
+    <div id="instruction">赤い候補をタップして確定してください</div>
   </div>
 
-  <!-- 裏で動くカメラと、表に表示するお絵描きキャンバス -->
   <video id="input_video" autoplay playsinline muted></video>
   <canvas id="output_canvas"></canvas>
 
   <div id="ui-footer">
-    <button id="btn-save">📸 画像を保存</button>
+    <button id="btn-reset" class="action-btn">🔄 マーカーリセット</button>
+    <button id="btn-save" class="action-btn">📸 画像を保存</button>
   </div>
 
   <script>
@@ -62,53 +60,80 @@
     const ctx = canvas.getContext('2d');
     const instructionEl = document.getElementById('instruction');
 
-    // 1. カメラの起動設定
+    let lockedMarkers = []; // 確定（ロック）したマーカーを入れる箱
+    let candidateBlobs = []; // 現在画面に映っている赤い色の候補
+
+    // 1. カメラ起動
     navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
     }).then(stream => {
       video.srcObject = stream;
       video.play();
-      // カメラ映像が読み込まれたら、トラッキング開始
       video.onloadeddata = () => {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        requestAnimationFrame(trackRedStickers); // パラパラ漫画のように連続処理を開始
+        requestAnimationFrame(trackRedStickers);
       };
     }).catch(err => {
       alert("カメラの起動に失敗しました。");
     });
 
-    // 2. 赤色を見つけて線を引くメインプログラム（1秒間に約60回実行されます）
+    // 2. 画面タップ（クリック）でマーカーを確定する処理
+    canvas.addEventListener('click', (e) => {
+      // 画面の拡大率を計算して、タップした正確な座標を割り出す
+      const rect = canvas.getBoundingClientRect();
+      const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+      const displayWidth = canvas.width * scale;
+      const displayHeight = canvas.height * scale;
+      const offsetX = (rect.width - displayWidth) / 2;
+      const offsetY = (rect.height - displayHeight) / 2;
+
+      const clickX = (e.clientX - rect.left - offsetX) / scale;
+      const clickY = (e.clientY - rect.top - offsetY) / scale;
+
+      // タップした場所の近く（半径約50ピクセル以内）に「候補の赤い点」があるか探す
+      let closestBlob = null;
+      let minDist = 2500; // 50の2乗
+      
+      candidateBlobs.forEach(blob => {
+        const dist = (blob.x - clickX) ** 2 + (blob.y - clickY) ** 2;
+        if (dist < minDist) {
+          minDist = dist;
+          closestBlob = blob;
+        }
+      });
+
+      // 近くに候補があれば、確定マーカーとして登録
+      if (closestBlob) {
+        lockedMarkers.push({ x: closestBlob.x, y: closestBlob.y });
+        
+        // 上から順に並び替え
+        lockedMarkers.sort((a, b) => a.y - b.y);
+      }
+    });
+
+    // 3. メインのトラッキング処理（パラパラ漫画）
     function trackRedStickers() {
-      // キャンバスに現在のカメラ映像をそのまま描く
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // 映像のピクセル（色の粒）データをすべて取得する
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imgData.data;
 
-      let blobs = []; // 見つけた赤いシールの塊（座標）を入れる箱
+      let blobs = [];
 
-      // 処理を軽くするため、4ピクセル飛ばしで画面全体の色をスキャン
-      const step = 4;
+      // 【改善1】stepを2にして、より細かくスキャンする（遠くの小さなシールも発見）
+      const step = 2; 
       for (let y = 0; y < canvas.height; y += step) {
         for (let x = 0; x < canvas.width; x += step) {
           const i = (y * canvas.width + x) * 4;
-          const r = data[i];     // 赤の強さ (0〜255)
-          const g = data[i + 1]; // 緑の強さ
-          const b = data[i + 2]; // 青の強さ
+          const r = data[i];     
+          const g = data[i + 1]; 
+          const b = data[i + 2]; 
 
-          // 【色判定】「赤が強く、緑と青が弱い」ピクセルを見つける
-          // ※現場のシールの色や明るさに合わせて、ここの数字を調整できます
           if (r > 150 && g < 80 && b < 80) {
-            
-            // 近くにある赤いピクセル同士を「1つのシール」としてまとめる処理
             let foundBlob = false;
             for (let blob of blobs) {
-              const dx = x - blob.x;
-              const dy = y - blob.y;
-              // 距離が近い（約60ピクセル以内）なら同じ塊にする
-              if (dx * dx + dy * dy < 3600) {
+              if (Math.abs(blob.x - x) < 30 && Math.abs(blob.y - y) < 30) {
                 blob.x = (blob.x * blob.count + x) / (blob.count + 1);
                 blob.y = (blob.y * blob.count + y) / (blob.count + 1);
                 blob.count++;
@@ -117,72 +142,95 @@
               }
             }
             if (!foundBlob) {
-              blobs.push({ x: x, y: y, count: 1 }); // 新しい塊として登録
+              blobs.push({ x: x, y: y, count: 1 });
             }
           }
         }
       }
 
-      // ノイズ（たまたま赤かっただけの小さなゴミ）を除外（countが20以上の塊だけをシールとみなす）
-      blobs = blobs.filter(b => b.count > 20);
+      // 【改善2】count>3 で、わずかな赤い点でも候補として残す
+      candidateBlobs = blobs.filter(b => b.count > 3);
 
-      // 塊を「上から下」の順番に並び替える（Y座標が小さい順）
-      blobs.sort((a, b) => a.y - b.y);
-
-      // 画面上の案内文を更新
-      if (blobs.length > 0) {
-        instructionEl.innerText = `${blobs.length} 個のマーカーを追跡中！`;
-      } else {
-        instructionEl.innerText = `赤いシールを映してください`;
-      }
-
-      // 3. マーカーと線を自動で描画
-      if (blobs.length > 0) {
-        // --- A: シール同士を結ぶ線 ---
-        ctx.beginPath();
-        ctx.moveTo(blobs[0].x, blobs[0].y);
-        for (let i = 1; i < blobs.length; i++) {
-          ctx.lineTo(blobs[i].x, blobs[i].y);
+      // --- 【確定マーカーの追従処理】 ---
+      lockedMarkers.forEach(marker => {
+        let closest = null;
+        let minDist = 10000; // 前回の位置から半径100ピクセル以内を探す
+        candidateBlobs.forEach(blob => {
+          const dist = (marker.x - blob.x) ** 2 + (marker.y - blob.y) ** 2;
+          if (dist < minDist) {
+            minDist = dist;
+            closest = blob;
+          }
+        });
+        // 近くに赤い候補がいれば、マーカーの位置を最新に更新する
+        if (closest) {
+          marker.x = closest.x;
+          marker.y = closest.y;
         }
-        ctx.strokeStyle = '#00FF00'; // 緑色の線
+      });
+
+      // --- 描画処理 ---
+
+      // A: 候補の表示（うすい赤色の円）
+      candidateBlobs.forEach(blob => {
+        ctx.beginPath();
+        ctx.arc(blob.x, blob.y, 10, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 100, 100, 0.8)'; // 半透明の赤
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
+      // B: 確定マーカーと線の表示
+      if (lockedMarkers.length > 0) {
+        
+        // 確定マーカー同士を結ぶ線
+        ctx.beginPath();
+        ctx.moveTo(lockedMarkers[0].x, lockedMarkers[0].y);
+        for (let i = 1; i < lockedMarkers.length; i++) {
+          ctx.lineTo(lockedMarkers[i].x, lockedMarkers[i].y);
+        }
+        ctx.strokeStyle = '#00FF00';
         ctx.lineWidth = 4;
         ctx.stroke();
 
-        // --- B: 一番上のシールから下への垂直線 ---
+        // 垂直線
         ctx.beginPath();
-        ctx.moveTo(blobs[0].x, blobs[0].y);
-        ctx.lineTo(blobs[0].x, canvas.height);
-        ctx.strokeStyle = '#00BFFF'; // 水色の線
-        ctx.setLineDash([15, 15]); // 点線
+        ctx.moveTo(lockedMarkers[0].x, lockedMarkers[0].y);
+        ctx.lineTo(lockedMarkers[0].x, canvas.height);
+        ctx.strokeStyle = '#00BFFF';
+        ctx.setLineDash([15, 15]);
         ctx.lineWidth = 3;
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // --- C: 認識したシールの上にマーカーを描く ---
-        blobs.forEach((blob, index) => {
+        // 確定マーカー（黄色）の描画
+        lockedMarkers.forEach((marker, index) => {
           ctx.beginPath();
-          ctx.arc(blob.x, blob.y, 12, 0, Math.PI * 2);
-          ctx.fillStyle = '#FFD700'; // 黄色の丸
+          ctx.arc(marker.x, marker.y, 12, 0, Math.PI * 2);
+          ctx.fillStyle = '#FFD700';
           ctx.fill();
           ctx.lineWidth = 3;
-          ctx.strokeStyle = 'black'; // 黒フチ
+          ctx.strokeStyle = 'black';
           ctx.stroke();
 
-          // マーカーの横に番号を表示（①, ②...の代わり）
           ctx.fillStyle = 'white';
           ctx.font = 'bold 24px sans-serif';
-          ctx.shadowColor = 'black';
-          ctx.shadowBlur = 4;
-          ctx.fillText(index + 1, blob.x + 20, blob.y + 10);
-          ctx.shadowBlur = 0;
+          ctx.fillText(index + 1, marker.x + 20, marker.y + 10);
         });
+
+        instructionEl.innerText = `${lockedMarkers.length} 個のマーカーをロック中！`;
+      } else {
+        instructionEl.innerText = `赤い候補をタップして確定してください`;
       }
 
-      // 次のフレーム（瞬間）も同じ処理を繰り返す
       requestAnimationFrame(trackRedStickers);
     }
 
-    // 画像保存ボタン
+    // ボタン処理
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      lockedMarkers = [];
+    });
+
     document.getElementById('btn-save').addEventListener('click', () => {
       const link = document.createElement('a');
       link.download = `アライメント測定_${new Date().getTime()}.png`;
