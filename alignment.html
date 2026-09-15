@@ -3,140 +3,287 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>リアルタイムアライメント測定</title>
+  <title>アライメント測定アプリ（プロ仕様）</title>
   
-  <!-- AI骨格認識（MediaPipe）のプログラム -->
+  <!-- AI骨格認識（MediaPipe） -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   
   <style>
     body {
-      margin: 0;
-      padding: 0;
-      background-color: #222;
-      overflow: hidden;
-      font-family: sans-serif;
+      margin: 0; padding: 0; background-color: #111; color: white;
+      font-family: sans-serif; overflow: hidden;
+      display: flex; flex-direction: column; height: 100vh;
     }
-    video { display: none; } /* カメラ映像は裏で処理するため隠す */
+    
+    /* 上部のUIエリア */
+    #ui-header {
+      background-color: #333; padding: 10px; text-align: center; z-index: 20;
+    }
+    .mode-btn {
+      padding: 8px 15px; margin: 0 5px; font-weight: bold; border: none; border-radius: 5px;
+      background-color: #555; color: white; cursor: pointer;
+    }
+    .mode-btn.active { background-color: #0078D4; } /* Microsoftブルー */
+    
+    #instruction {
+      margin-top: 10px; font-size: 16px; font-weight: bold; color: #FFD700;
+    }
+
+    /* カメラ映像とキャンバスのエリア */
+    #canvas-container {
+      flex: 1; position: relative; width: 100%; overflow: hidden;
+    }
+    video { display: none; }
     canvas {
-      width: 100vw;
-      height: 100vh;
-      object-fit: contain;
+      width: 100%; height: 100%; object-fit: contain; cursor: crosshair;
     }
-    #loading {
-      position: absolute;
-      top: 50%; left: 50%;
-      transform: translate(-50%, -50%);
-      color: white; font-size: 18px; text-align: center;
-      z-index: 10;
+
+    /* 警告メッセージ */
+    #warning-msg {
+      position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+      background-color: rgba(255, 0, 0, 0.8); color: white;
+      padding: 10px 20px; font-size: 20px; font-weight: bold; border-radius: 10px;
+      display: none; z-index: 30; pointer-events: none;
     }
-    /* 追加：保存ボタンのデザイン */
-    #btn-save {
-      position: absolute;
-      bottom: 30px;
-      left: 50%;
-      transform: translateX(-50%); /* 画面の真ん中に配置 */
-      padding: 15px 30px;
-      font-size: 18px;
-      font-weight: bold;
-      background-color: #0078D4; /* Power Appsでおなじみの青色！ */
-      color: white;
-      border: none;
-      border-radius: 30px;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-      cursor: pointer;
-      z-index: 20; /* 一番手前に表示 */
-      display: none; /* AIが認識するまでは隠しておく */
+
+    /* 下部のボタンエリア */
+    #ui-footer {
+      background-color: #333; padding: 15px; display: flex; justify-content: space-around; z-index: 20;
     }
-    #btn-save:active { background-color: #005A9E; }
+    .action-btn {
+      padding: 12px 20px; font-size: 16px; font-weight: bold; border: none; border-radius: 25px;
+      color: white; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    #btn-reset { background-color: #666; }
+    #btn-save { background-color: #107C41; } /* Excelライクな緑 */
   </style>
 </head>
 <body>
-  <div id="loading">AIモデルを準備中...<br>（数秒かかります）</div>
 
-  <!-- 【重要修正】 autoplay playsinline の後に「muted」を追加しました！ -->
-  <video id="input_video" autoplay playsinline muted></video>
-  <canvas id="output_canvas"></canvas>
+  <!-- 上部UI（モード選択と案内） -->
+  <div id="ui-header">
+    <div>
+      <button id="btn-sagittal" class="mode-btn active">矢状面モード</button>
+      <button id="btn-frontal" class="mode-btn">前額面モード</button>
+    </div>
+    <div id="instruction">AI起動中...しばらくお待ちください</div>
+  </div>
 
-  <!-- 追加：保存ボタン -->
-  <button id="btn-save">📸 今の姿勢を保存</button>
+  <!-- カメラ領域 -->
+  <div id="canvas-container">
+    <div id="warning-msg">⚠️ 動かないでください！</div>
+    <video id="input_video" autoplay playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+  </div>
+
+  <!-- 下部UI（操作ボタン） -->
+  <div id="ui-footer">
+    <button id="btn-reset" class="action-btn">🔄 やり直す</button>
+    <button id="btn-save" class="action-btn">📸 画像を保存</button>
+  </div>
 
   <script>
+    // --- 1. 設定データ（指標と色） ---
+    const markersConfig = {
+      sagittal: [
+        { label: "①乳様突起", color: "#FF3B30" }, // 赤
+        { label: "②肩峰", color: "#FF9500" }, // オレンジ
+        { label: "③大転子", color: "#4CD964" }, // 緑
+        { label: "④膝蓋骨後面", color: "#5AC8FA" }, // 水色
+        { label: "⑤外果の前方", color: "#AF52DE" } // 紫
+      ],
+      frontal: [
+        { label: "①喉頭隆起", color: "#FF3B30" },
+        { label: "②椎骨棘突起", color: "#FF9500" },
+        { label: "③殿裂", color: "#4CD964" },
+        { label: "④両膝関節内側の中心", color: "#5AC8FA" },
+        { label: "⑤両内果間の中心", color: "#AF52DE" }
+      ]
+    };
+
+    // --- 2. アプリの変数 ---
+    let currentMode = "sagittal"; // 初期は矢状面
+    let placedMarkers = []; // ユーザーが打ったマーカー
+    let referencePose = null; // 最初にマーカーを打った瞬間のAIの骨格データ（ブレ判定の基準）
+    let isAiReady = false;
+
+    // 画面の部品
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
-    const loadingMessage = document.getElementById('loading');
-    const btnSave = document.getElementById('btn-save');
+    const instructionEl = document.getElementById('instruction');
+    const warningEl = document.getElementById('warning-msg');
 
+    // --- 3. 案内文の更新 ---
+    function updateInstruction() {
+      if (!isAiReady) return;
+      const config = markersConfig[currentMode];
+      if (placedMarkers.length < config.length) {
+        instructionEl.innerText = `タップして設置： ${config[placedMarkers.length].label}`;
+        instructionEl.style.color = config[placedMarkers.length].color;
+      } else {
+        instructionEl.innerText = "すべてのマーカーを設置完了しました！";
+        instructionEl.style.color = "white";
+      }
+    }
+
+    // --- 4. モード切替ボタンの処理 ---
+    document.getElementById('btn-sagittal').addEventListener('click', (e) => {
+      currentMode = "sagittal";
+      placedMarkers = []; referencePose = null;
+      e.target.classList.add('active');
+      document.getElementById('btn-frontal').classList.remove('active');
+      updateInstruction();
+    });
+
+    document.getElementById('btn-frontal').addEventListener('click', (e) => {
+      currentMode = "frontal";
+      placedMarkers = []; referencePose = null;
+      e.target.classList.add('active');
+      document.getElementById('btn-sagittal').classList.remove('active');
+      updateInstruction();
+    });
+
+    // --- 5. キャンバスをタップした時の処理（マーカー設置） ---
+    canvasElement.addEventListener('pointerdown', (e) => {
+      if (!isAiReady || placedMarkers.length >= 5) return;
+
+      // タップした座標を正確に計算（object-fit: contain の余白を考慮）
+      const rect = canvasElement.getBoundingClientRect();
+      const scale = Math.min(rect.width / canvasElement.width, rect.height / canvasElement.height);
+      const displayWidth = canvasElement.width * scale;
+      const displayHeight = canvasElement.height * scale;
+      const offsetX = (rect.width - displayWidth) / 2;
+      const offsetY = (rect.height - displayHeight) / 2;
+
+      const clickX = (e.clientX - rect.left - offsetX) / scale;
+      const clickY = (e.clientY - rect.top - offsetY) / scale;
+
+      // 範囲外タップを無視
+      if (clickX < 0 || clickX > canvasElement.width || clickY < 0 || clickY > canvasElement.height) return;
+
+      placedMarkers.push({ x: clickX, y: clickY });
+      updateInstruction();
+    });
+
+    // --- 6. AI（MediaPipe）の処理 ---
     function onResults(results) {
-      // 認識が始まったらローディングを消し、保存ボタンを表示
-      loadingMessage.style.display = 'none';
-      btnSave.style.display = 'block';
+      if (!isAiReady) {
+        isAiReady = true;
+        updateInstruction();
+      }
 
+      // キャンバスのサイズ設定
       canvasElement.width = videoElement.videoWidth;
       canvasElement.height = videoElement.videoHeight;
 
+      // カメラ映像を描画
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
+      // 【姿勢ブレ監視】
+      warningEl.style.display = 'none'; // 警告を一旦消す
       if (results.poseLandmarks) {
-        const landmarks = results.poseLandmarks;
-
-        // 体のマーカーと線を描画
-        drawConnectors(canvasCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
-        drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
-
-        // 一番高い位置のポイントを探す
-        let highestPoint = landmarks[0];
-        for(let i = 1; i < landmarks.length; i++) {
-          if(landmarks[i].y < highestPoint.y) {
-            highestPoint = landmarks[i];
+        // マーカーが1つ以上打たれた瞬間の姿勢を「基準」として記憶
+        if (placedMarkers.length > 0 && !referencePose) {
+          referencePose = results.poseLandmarks;
+        }
+        
+        // 基準姿勢と今の姿勢を比較（肩と腰の位置ズレをチェック）
+        if (referencePose && placedMarkers.length < 5) {
+          let diff = 0;
+          const checkPoints = [11, 12, 23, 24]; // 左右の肩と腰
+          checkPoints.forEach(i => {
+            diff += Math.abs(results.poseLandmarks[i].x - referencePose[i].x);
+            diff += Math.abs(results.poseLandmarks[i].y - referencePose[i].y);
+          });
+          
+          // ズレが一定量を超えたら警告を表示（0.1 は感度調整用数値）
+          if (diff > 0.1) {
+            warningEl.style.display = 'block';
           }
         }
+      } else {
+        // 人が画面から消えた、またはマーカーがない時は基準をリセット
+        if (placedMarkers.length === 0) referencePose = null;
+      }
 
-        // 一番高い位置から垂直線を下ろす
-        const hX = highestPoint.x * canvasElement.width;
-        const hY = highestPoint.y * canvasElement.height;
+      // --- マーカーと線の描画 ---
+      if (placedMarkers.length > 0) {
+        const config = markersConfig[currentMode];
 
+        // 1. マーカー同士を結ぶ線
         canvasCtx.beginPath();
-        canvasCtx.moveTo(hX, hY);
-        canvasCtx.lineTo(hX, canvasElement.height);
+        canvasCtx.moveTo(placedMarkers[0].x, placedMarkers[0].y);
+        for (let i = 1; i < placedMarkers.length; i++) {
+          canvasCtx.lineTo(placedMarkers[i].x, placedMarkers[i].y);
+        }
+        canvasCtx.strokeStyle = 'white';
+        canvasCtx.lineWidth = 3;
+        canvasCtx.stroke();
+
+        // 2. 一番上のマーカー（インデックス0）から地面への垂直線
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(placedMarkers[0].x, placedMarkers[0].y);
+        canvasCtx.lineTo(placedMarkers[0].x, canvasElement.height);
         canvasCtx.strokeStyle = '#00BFFF';
-        canvasCtx.lineWidth = 4;
+        canvasCtx.lineWidth = 2;
         canvasCtx.setLineDash([10, 10]);
         canvasCtx.stroke();
         canvasCtx.setLineDash([]);
+
+        // 3. マーカーの丸とテキストの描画
+        for (let i = 0; i < placedMarkers.length; i++) {
+          const pt = placedMarkers[i];
+          const color = config[i].color;
+
+          // 丸
+          canvasCtx.beginPath();
+          canvasCtx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+          canvasCtx.fillStyle = color;
+          canvasCtx.fill();
+          canvasCtx.lineWidth = 2;
+          canvasCtx.strokeStyle = 'white';
+          canvasCtx.stroke();
+
+          // テキストラベル
+          canvasCtx.fillStyle = color;
+          canvasCtx.font = "bold 16px sans-serif";
+          canvasCtx.shadowColor = "black";
+          canvasCtx.shadowBlur = 4;
+          canvasCtx.fillText(config[i].label, pt.x + 15, pt.y + 5);
+          canvasCtx.shadowBlur = 0; // シャドウリセット
+        }
       }
       canvasCtx.restore();
     }
 
-    const pose = new Pose({locateFile: (file) => {
-      return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
-    }});
+    // AIの初期設定
+    const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
     pose.setOptions({
-      modelComplexity: 1,
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
+      modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5
     });
     pose.onResults(onResults);
 
+    // カメラ起動
     const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await pose.send({image: videoElement});
-      },
-      width: 640,
-      height: 480,
-      facingMode: 'environment'
+      onFrame: async () => { await pose.send({image: videoElement}); },
+      width: 1280, height: 720, facingMode: 'environment'
     });
     camera.start();
 
-    // 追加：保存ボタンを押した時の処理
-    btnSave.addEventListener('click', () => {
+    // --- 7. 操作ボタンの処理 ---
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      placedMarkers = [];
+      referencePose = null;
+      updateInstruction();
+    });
+
+    document.getElementById('btn-save').addEventListener('click', () => {
       const link = document.createElement('a');
-      link.download = 'AIアライメント測定_' + new Date().getTime() + '.png';
+      link.download = `アライメント測定_${currentMode}_${new Date().getTime()}.png`;
       link.href = canvasElement.toDataURL('image/png');
       link.click();
     });
